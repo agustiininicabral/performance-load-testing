@@ -1,0 +1,63 @@
+name: Performance Load Testing CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit Tests / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: pytest --cov=load_testing --cov-report=term-missing
+
+  load-smoke:
+    name: Locust Smoke Load
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: Start target API
+        run: |
+          uvicorn load_testing.app:app --host 127.0.0.1 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/uvicorn.log
+          exit 1
+      - name: Run short Locust load test
+        run: |
+          mkdir -p output
+          locust -f locust/locustfile.py --headless --host http://127.0.0.1:8000 \
+            -u 10 -r 2 -t 10s --exit-code-on-error 1 \
+            --csv output/load-smoke --html output/load-smoke.html --only-summary
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: locust-smoke-report
+          path: output/
+          if-no-files-found: ignore
