@@ -31,6 +31,42 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest --cov=load_testing --cov-report=term-missing
 
+  jmeter-smoke:
+    name: Apache JMeter Smoke Load
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: Install Apache JMeter
+        run: |
+          curl -fsSLO https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          tar -xzf apache-jmeter-5.6.3.tgz
+      - name: Start target API
+        run: |
+          uvicorn load_testing.app:app --host 127.0.0.1 --port 8000 > /tmp/uvicorn-jmeter.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/uvicorn-jmeter.log
+          exit 1
+      - name: Execute JMeter test plan
+        run: |
+          mkdir -p output
+          apache-jmeter-5.6.3/bin/jmeter -n -t jmeter/api-smoke.jmx \
+            -Jhost=127.0.0.1 -Jport=8000 -Jthreads=2 -Jrampup=1 -Jloops=2 \
+            -l output/jmeter-smoke.jtl -j output/jmeter.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jmeter-smoke-report
+          path: output/
+          if-no-files-found: ignore
+
   load-smoke:
     name: Locust Smoke Load
     runs-on: ubuntu-latest
